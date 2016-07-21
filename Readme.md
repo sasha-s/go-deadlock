@@ -33,11 +33,11 @@ say, you have two mutexes A and B, and in some goroutines you have
 ```go
 A.Lock() // defer A.Unlock() or similar.
 ...
-B.Lock()// defer B.Unlock() or similar.
+B.Lock() // defer B.Unlock() or similar.
 ```
 And in another goroutine the order of locks is reversed:
 ```go
-B.Lock()// defer B.Unlock() or similar.
+B.Lock() // defer B.Unlock() or similar.
 ...
 A.Lock() // defer A.Unlock() or similar.
 ```
