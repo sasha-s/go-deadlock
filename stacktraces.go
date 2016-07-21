@@ -14,7 +14,7 @@ import (
 )
 
 func callers(skip int) []uintptr {
-	s := make([]uintptr, 50) // Most relevan context seem to appear near the top of the stack.
+	s := make([]uintptr, 50) // Most relevant context seem to appear near the top of the stack.
 	return s[:runtime.Callers(2+skip, s)]
 }
 
