@@ -1,4 +1,4 @@
-# Online deadlock detection in go (golang).
+# Online deadlock detection in go (golang). [Docs](https://godoc.org/github.com/sasha-s/go-deadlock).
 
 ## Why
 Deadlocks happen and are painful to debug.
