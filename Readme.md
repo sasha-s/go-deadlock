@@ -100,6 +100,11 @@ created by google.golang.org/cloud/bigtable/bttest.TestConcurrentMutationsReadMo
         /Users/sasha/go/src/google.golang.org/cloud/bigtable/bttest/inmem_test.go:126 +0xb6f
 ```
 
+## Used in
+[cockroachdb: Potential deadlock between Gossip.SetStorage and Node.gossipStores](https://github.com/cockroachdb/cockroach/issues/7972)
+
+[bigtable/bttest: A race between GC and row mutations](https://code-review.googlesource.com#/c/5301/)
+
 ## Need a mutex that works with net.context?
 I have [one](https://github.com/sasha-s/go-csync).
 
