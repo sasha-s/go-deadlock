@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"runtime"
-	"strconv"
 	"sync"
 	"time"
+
+	"github.com/petermattis/goid"
 )
 
 // Opts control how deadlock detection behaves.
@@ -167,13 +167,13 @@ func lock(lockFn func(), ptr interface{}) {
 				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", prev.gid, ptr)
 				printStack(Opts.LogBuf, prev.stack)
 				fmt.Fprintln(Opts.LogBuf, "Have been trying to lock it again for more than", Opts.DeadlockTimeout)
-				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", getGID(), ptr)
+				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", goid.Get(), ptr)
 				printStack(Opts.LogBuf, callers(2))
 				fmt.Fprintln(Opts.LogBuf)
 				stacks := stacks()
 				grs := bytes.Split(stacks, []byte("\n\n"))
 				for _, g := range grs {
-					if extractGID(g) == prev.gid {
+					if goid.ExtractGID(g) == prev.gid {
 						fmt.Fprintln(Opts.LogBuf, "Here is what goroutine", prev.gid, "doing now")
 						Opts.LogBuf.Write(g)
 						fmt.Fprintln(Opts.LogBuf)
@@ -204,7 +204,7 @@ type lockOrder struct {
 
 type stackGID struct {
 	stack []uintptr
-	gid   uint64
+	gid   int64
 }
 
 type beforeAfter struct {
@@ -228,7 +228,7 @@ func newLockOrder() *lockOrder {
 
 func (l *lockOrder) PostLock(skip int, p interface{}) {
 	stack := callers(skip)
-	gid := getGID()
+	gid := goid.Get()
 	l.mu.Lock()
 	l.cur[p] = stackGID{stack, gid}
 	l.mu.Unlock()
@@ -239,7 +239,7 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 		return
 	}
 	stack := callers(skip)
-	gid := getGID()
+	gid := goid.Get()
 	l.mu.Lock()
 	for b, bs := range l.cur {
 		if b == p {
@@ -292,19 +292,6 @@ func (l *lockOrder) other(ptr interface{}) {
 		printStack(Opts.LogBuf, pp.stack)
 	}
 	fmt.Fprintln(Opts.LogBuf)
-}
-
-// Hacky way of getting a goroutine ID.
-func getGID() uint64 {
-	b := make([]byte, 64)
-	return extractGID(b[:runtime.Stack(b, false)])
-}
-
-func extractGID(stack []byte) uint64 {
-	b := bytes.TrimPrefix(stack, []byte("goroutine "))
-	b = b[:bytes.IndexByte(b, ' ')]
-	gid, _ := strconv.ParseUint(string(b), 10, 64)
-	return gid
 }
 
 const header = "POTENTIAL DEADLOCK:"
