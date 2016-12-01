@@ -62,12 +62,10 @@ func (m *Mutex) Lock() {
 // It is allowed for one goroutine to lock a Mutex and then
 // arrange for another goroutine to unlock it.
 func (m *Mutex) Unlock() {
-	if Opts.Disable {
-		m.mu.Unlock()
-		return
-	}
 	m.mu.Unlock()
-	PostUnlock(m)
+	if !Opts.Disable {
+		PostUnlock(m)
+	}
 }
 
 // An RWMutex is a drop-in replacement for sync.RWMutex.
@@ -96,12 +94,10 @@ func (m *RWMutex) Lock() {
 // goroutine.  One goroutine may RLock (Lock) an RWMutex and then
 // arrange for another goroutine to RUnlock (Unlock) it.
 func (m *RWMutex) Unlock() {
-	if Opts.Disable {
-		m.mu.Unlock()
-		return
-	}
 	m.mu.Unlock()
-	PostUnlock(m)
+	if !Opts.Disable {
+		PostUnlock(m)
+	}
 }
 
 // RLock locks the mutex for reading.
@@ -117,12 +113,10 @@ func (m *RWMutex) RLock() {
 // It is a run-time error if rw is not locked for reading
 // on entry to RUnlock.
 func (m *RWMutex) RUnlock() {
-	if Opts.Disable {
-		m.mu.RUnlock()
-		return
+	if !Opts.Disable {
+		PostUnlock(m)
 	}
 	m.mu.RUnlock()
-	PostUnlock(m)
 }
 
 // RLocker returns a Locker interface that implements
