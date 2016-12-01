@@ -227,19 +227,20 @@ func newLockOrder() *lockOrder {
 }
 
 func (l *lockOrder) PostLock(skip int, p interface{}) {
+	stack := callers(skip)
+	gid := getGID()
 	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.cur[p] = stackGID{callers(skip), getGID()}
+	l.cur[p] = stackGID{stack, gid}
+	l.mu.Unlock()
 }
 
 func (l *lockOrder) PreLock(skip int, p interface{}) {
 	if Opts.DisableLockOrderDetection {
 		return
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
 	stack := callers(skip)
 	gid := getGID()
+	l.mu.Lock()
 	for b, bs := range l.cur {
 		if b == p {
 			continue
@@ -266,12 +267,13 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 		}
 	}
 	l.cur[p] = stackGID{stack, gid}
+	l.mu.Unlock()
 }
 
 func (l *lockOrder) PostUnlock(p interface{}) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	delete(l.cur, p)
+	l.mu.Unlock()
 }
 
 type rlocker RWMutex
