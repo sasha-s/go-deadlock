@@ -87,7 +87,7 @@ func TestLockOrder(t *testing.T) {
 		b.Unlock()
 	}()
 	wg.Wait()
-	if deadlocks != 1 {
+	if atomic.LoadUint32(&deadlocks) != 1 {
 		t.Fatalf("expected 1 deadlock, detected %d", deadlocks)
 	}
 }
@@ -112,11 +112,46 @@ func TestHardDeadlock(t *testing.T) {
 	case <-ch:
 	case <-time.After(time.Millisecond * 100):
 	}
-	if deadlocks != 1 {
+	if atomic.LoadUint32(&deadlocks) != 1 {
 		t.Fatalf("expected 1 deadlock, detected %d", deadlocks)
 	}
 	log.Println("****************")
 	mu.Unlock()
+	<-ch
+}
+
+func TestRWMutex(t *testing.T) {
+	defer restore()()
+	Opts.DeadlockTimeout = time.Millisecond * 20
+	var deadlocks uint32
+	Opts.OnPotentialDeadlock = func() {
+		atomic.AddUint32(&deadlocks, 1)
+	}
+	var a RWMutex
+	a.RLock()
+	go func() {
+		// We detect a potential deadlock here.
+		a.Lock()
+		defer a.Unlock()
+	}()
+	time.Sleep(time.Millisecond * 100) // We want the Lock call to happen.
+	ch := make(chan struct{})
+	go func() {
+		// We detect a potential deadlock here.
+		defer close(ch)
+		a.RLock()
+		defer a.RUnlock()
+	}()
+	select {
+	case <-ch:
+		t.Fatal("expected a timeout")
+	case <-time.After(time.Millisecond * 50):
+	}
+	a.RUnlock()
+	if atomic.LoadUint32(&deadlocks) != 2 {
+		t.Fatalf("expected 2 deadlock, detected %d", deadlocks)
+	}
+	<-ch
 }
 
 func restore() func() {

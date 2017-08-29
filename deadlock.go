@@ -1,6 +1,7 @@
 package deadlock
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ var Opts = struct {
 	// The map resets once the threshold is reached.
 	MaxMapSize int
 	// Will print to deadlock info to log buffer.
+	mu     sync.Mutex // Protects the LogBuf.
 	LogBuf io.Writer
 }{
 	DeadlockTimeout: time.Second * 30,
@@ -160,8 +162,9 @@ func lock(lockFn func(), ptr interface{}) {
 				prev, ok := lo.cur[ptr]
 				if !ok {
 					lo.mu.Unlock()
-					break // Nobody seems to be holding a lock, try again.
+					break // Nobody seems to be holding the lock, try again.
 				}
+				Opts.mu.Lock()
 				fmt.Fprintln(Opts.LogBuf, header)
 				fmt.Fprintln(Opts.LogBuf, "Previous place where the lock was grabbed")
 				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", prev.gid, ptr)
@@ -183,6 +186,8 @@ func lock(lockFn func(), ptr interface{}) {
 				fmt.Fprintln(Opts.LogBuf, "All current goroutines:")
 				Opts.LogBuf.Write(stacks)
 				lo.mu.Unlock()
+				Opts.mu.Unlock()
+				fmt.Fprintln(Opts.LogBuf)
 				Opts.OnPotentialDeadlock()
 				<-ch
 				PostLock(4, ptr)
@@ -249,6 +254,7 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 			continue
 		}
 		if s, ok := l.order[beforeAfter{p, b}]; ok {
+			Opts.mu.Lock()
 			fmt.Fprintln(Opts.LogBuf, header, "Inconsistent locking. saw this ordering in one goroutine:")
 			fmt.Fprintln(Opts.LogBuf, "happened before")
 			printStack(Opts.LogBuf, s.before)
@@ -259,6 +265,11 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 			fmt.Fprintln(Opts.LogBuf, "happend after")
 			printStack(Opts.LogBuf, stack)
 			l.other(p)
+			fmt.Fprintln(Opts.LogBuf)
+			if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
+				buf.Flush()
+			}
+			Opts.mu.Unlock()
 			Opts.OnPotentialDeadlock()
 		}
 		l.order[beforeAfter{b, p}] = ss{bs.stack, stack}
@@ -266,7 +277,6 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 			l.order = map[beforeAfter]ss{}
 		}
 	}
-	l.cur[p] = stackGID{stack, gid}
 	l.mu.Unlock()
 }
 
