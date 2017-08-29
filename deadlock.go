@@ -188,6 +188,9 @@ func lock(lockFn func(), ptr interface{}) {
 				lo.mu.Unlock()
 				Opts.mu.Unlock()
 				fmt.Fprintln(Opts.LogBuf)
+				if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
+					buf.Flush()
+				}
 				Opts.OnPotentialDeadlock()
 				<-ch
 				PostLock(4, ptr)
