@@ -107,6 +107,3 @@ created by google.golang.org/cloud/bigtable/bttest.TestConcurrentMutationsReadMo
 ## Need a mutex that works with net.context?
 I have [one](https://github.com/sasha-s/go-csync).
 
-## Warning: Black magic inside
-go-deadlock is parsing goroutine ID from stacktraces for fun and profit.
-See [Goroutine IDs](http://blog.sgmansfield.com/2015/12/goroutine-ids/) blog post by [Scott Mansfield](http://blog.sgmansfield.com).
