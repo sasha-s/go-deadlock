@@ -149,7 +149,7 @@ func TestRWMutex(t *testing.T) {
 	}
 	a.RUnlock()
 	if atomic.LoadUint32(&deadlocks) != 2 {
-		t.Fatalf("expected 2 deadlock, detected %d", deadlocks)
+		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
 	}
 	<-ch
 }
@@ -184,6 +184,6 @@ func TestLockDuplicate(t *testing.T) {
 	}()
 	time.Sleep(time.Second * 1)
 	if atomic.LoadUint32(&deadlocks) != 2 {
-		t.Fatalf("expected 2 deadlock, detected %d", deadlocks)
+		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
 	}
 }
