@@ -160,3 +160,30 @@ func restore() func() {
 		Opts = opts
 	}
 }
+
+func TestLockDuplicate(t *testing.T) {
+	defer restore()()
+	Opts.DeadlockTimeout = 0
+	var deadlocks uint32
+	Opts.OnPotentialDeadlock = func() {
+		atomic.AddUint32(&deadlocks, 1)
+	}
+	var a RWMutex
+	var b Mutex
+	go func() {
+		a.RLock()
+		a.Lock()
+		a.RUnlock()
+		a.Unlock()
+	}()
+	go func() {
+		b.Lock()
+		b.Lock()
+		b.Unlock()
+		b.Unlock()
+	}()
+	time.Sleep(time.Second * 1)
+	if atomic.LoadUint32(&deadlocks) != 2 {
+		t.Fatalf("expected 2 deadlock, detected %d", deadlocks)
+	}
+}

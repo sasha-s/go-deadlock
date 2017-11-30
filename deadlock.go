@@ -251,6 +251,21 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 	l.mu.Lock()
 	for b, bs := range l.cur {
 		if b == p {
+			if bs.gid == gid {
+				Opts.mu.Lock()
+				fmt.Fprintln(Opts.LogBuf, header, "Duplicate locking, saw callers this locks in one goroutine:")
+				fmt.Fprintf(Opts.LogBuf, "current goroutine %d lock %v \n", gid, b)
+				fmt.Fprintln(Opts.LogBuf, "all callers to this lock in the goroutine")
+				printStack(Opts.LogBuf, bs.stack)
+				printStack(Opts.LogBuf, stack)
+				l.other(p)
+				fmt.Fprintln(Opts.LogBuf)
+				if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
+					buf.Flush()
+				}
+				Opts.mu.Unlock()
+				Opts.OnPotentialDeadlock()
+			}
 			continue
 		}
 		if bs.gid != gid { // We want locks taken in the same goroutine only.
