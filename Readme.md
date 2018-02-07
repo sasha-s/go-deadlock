@@ -115,3 +115,47 @@ created by google.golang.org/cloud/bigtable/bttest.TestConcurrentMutationsReadMo
 ## Need a mutex that works with net.context?
 I have [one](https://github.com/sasha-s/go-csync).
 
+## Grabbing an RLock twice from the same goroutine
+This is, surprisingly, not a good idea!
+
+From [RWMutex](https://golang.org/pkg/sync/#RWMutex) docs:
+
+>If a goroutine holds a RWMutex for reading and another goroutine might call Lock, no goroutine should expect to be able to acquire a read lock until the initial read lock is released. In particular, this prohibits recursive read locking. This is to ensure that the lock eventually becomes available; a blocked Lock call excludes new readers from acquiring the lock.
+
+
+This code can deadlock:
+```go
+var a sync.RWMutex
+    var wg sync.WaitGroup
+
+    sleep := func() {
+      time.Sleep(time.Duration((rand.Intn(20))) * time.Millisecond)
+    }
+
+    rlockTwice := func() {
+      defer wg.Done()
+      sleep()
+      a.RLock()
+      sleep()
+      a.RLock()
+      sleep()
+      a.RUnlock()
+      sleep()
+      a.RUnlock()
+    }
+
+    lock := func() {
+      defer wg.Done()
+      sleep()
+      a.Lock()
+      sleep()
+      a.Unlock()
+    }
+
+    for i := 0; i < 10; i++ {
+      wg.Add(2)
+      go rlockTwice()
+      go lock()
+    }
+```
+
