@@ -58,7 +58,7 @@ In addition, if it sees that we are waiting on a lock for a long time (opts.Dead
 
 
 ## Sample output
-####Inconsistent lock ordering:
+#### Inconsistent lock ordering:
 ```
 POTENTIAL DEADLOCK: Inconsistent locking. saw this ordering in one goroutine:
 happened before
