@@ -125,7 +125,7 @@ From [RWMutex](https://golang.org/pkg/sync/#RWMutex) docs:
 
 This code can deadlock:
 ```go
-var a sync.RWMutex
+    var a sync.RWMutex
     var wg sync.WaitGroup
 
     sleep := func() {
