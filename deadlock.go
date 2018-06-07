@@ -115,10 +115,10 @@ func (m *RWMutex) RLock() {
 // It is a run-time error if rw is not locked for reading
 // on entry to RUnlock.
 func (m *RWMutex) RUnlock() {
+	m.mu.RUnlock()
 	if !Opts.Disable {
 		PostUnlock(m)
 	}
-	m.mu.RUnlock()
 }
 
 // RLocker returns a Locker interface that implements
