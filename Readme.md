@@ -124,7 +124,7 @@ From [RWMutex](https://golang.org/pkg/sync/#RWMutex) docs:
 >If a goroutine holds a RWMutex for reading and another goroutine might call Lock, no goroutine should expect to be able to acquire a read lock until the initial read lock is released. In particular, this prohibits recursive read locking. This is to ensure that the lock eventually becomes available; a blocked Lock call excludes new readers from acquiring the lock.
 
 
-This code can deadlock &mdash; [run the example on playground](https://play.golang.org/p/AkL-W63nq5f):
+The following code will deadlock &mdash; [run the example on playground](https://play.golang.org/p/AkL-W63nq5f) or [try it online with go-deadlock on wandbox](https://wandbox.org/permlink/JwnL0GMySBju4SII):
 ```go
 package main
 
