@@ -125,39 +125,52 @@ From [RWMutex](https://golang.org/pkg/sync/#RWMutex) docs:
 >If a goroutine holds a RWMutex for reading and another goroutine might call Lock, no goroutine should expect to be able to acquire a read lock until the initial read lock is released. In particular, this prohibits recursive read locking. This is to ensure that the lock eventually becomes available; a blocked Lock call excludes new readers from acquiring the lock.
 
 
-This code can deadlock:
+This code can deadlock &mdash; [run the example on playground](https://play.golang.org/p/AkL-W63nq5f):
 ```go
-    var a sync.RWMutex
-    var wg sync.WaitGroup
+package main
 
-    sleep := func() {
-      time.Sleep(time.Duration((rand.Intn(20))) * time.Millisecond)
-    }
+import (
+	"fmt"
+	"sync"
+)
 
-    rlockTwice := func() {
-      defer wg.Done()
-      sleep()
-      a.RLock()
-      sleep()
-      a.RLock()
-      sleep()
-      a.RUnlock()
-      sleep()
-      a.RUnlock()
-    }
+func main() {
+	var mu sync.RWMutex
 
-    lock := func() {
-      defer wg.Done()
-      sleep()
-      a.Lock()
-      sleep()
-      a.Unlock()
-    }
+	chrlockTwice := make(chan struct{}) // Used to control rlockTwice
+	rlockTwice := func() {
+		mu.RLock()
+		fmt.Println("first Rlock succeeded")
+		<-chrlockTwice
+		<-chrlockTwice
+		fmt.Println("trying to Rlock again")
+		mu.RLock()
+		fmt.Println("second Rlock succeeded")
+		mu.RUnlock()
+		mu.RUnlock()
+	}
 
-    for i := 0; i < 10; i++ {
-      wg.Add(2)
-      go rlockTwice()
-      go lock()
-    }
+	chLock := make(chan struct{}) // Used to contol lock
+	lock := func() {
+		<-chLock
+		fmt.Println("about to Lock")
+		mu.Lock()
+		fmt.Println("Lock succeeded")
+		mu.Unlock()
+		<-chLock
+	}
+
+	control := func() {
+		chrlockTwice <- struct{}{}
+		chLock <- struct{}{}
+
+		close(chrlockTwice)
+		close(chLock)
+	}
+
+	go control()
+	go lock()
+	rlockTwice()
+}
 ```
 
