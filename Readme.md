@@ -1,5 +1,6 @@
 # Online deadlock detection in go (golang). [Docs](https://godoc.org/github.com/sasha-s/go-deadlock). [![Build Status](https://travis-ci.org/sasha-s/go-deadlock.svg?branch=master)](https://travis-ci.org/sasha-s/go-deadlock) [![codecov](https://codecov.io/gh/sasha-s/go-deadlock/branch/master/graph/badge.svg)](https://codecov.io/gh/sasha-s/go-deadlock) [![version](https://badge.fury.io/gh/sasha-s%2Fgo-deadlock.svg)](https://badge.fury.io/gh/sasha-s%2Fgo-deadlock)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Try it online](https://img.shields.io/badge/try%20it-online-blue.svg)](https://wandbox.org/permlink/JwnL0GMySBju4SII)
 
 ## Why
 Deadlocks happen and are painful to debug.
