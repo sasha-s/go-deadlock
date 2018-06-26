@@ -280,7 +280,7 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 			printStack(Opts.LogBuf, s.after)
 			fmt.Fprintln(Opts.LogBuf, "in another goroutine: happened before")
 			printStack(Opts.LogBuf, bs.stack)
-			fmt.Fprintln(Opts.LogBuf, "happend after")
+			fmt.Fprintln(Opts.LogBuf, "happened after")
 			printStack(Opts.LogBuf, stack)
 			l.other(p)
 			fmt.Fprintln(Opts.LogBuf)
