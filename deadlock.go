@@ -30,7 +30,7 @@ var Opts = struct {
 	// The map resets once the threshold is reached.
 	MaxMapSize int
 	// Will print to deadlock info to log buffer.
-	mu     sync.Mutex // Protects the LogBuf.
+	mu     *sync.Mutex // Protects the LogBuf.
 	LogBuf io.Writer
 }{
 	DeadlockTimeout: time.Second * 30,
@@ -38,6 +38,7 @@ var Opts = struct {
 		os.Exit(2)
 	},
 	MaxMapSize: 1024 * 64,
+	mu:         &sync.Mutex{},
 	LogBuf:     os.Stderr,
 }
 
@@ -66,7 +67,7 @@ func (m *Mutex) Lock() {
 func (m *Mutex) Unlock() {
 	m.mu.Unlock()
 	if !Opts.Disable {
-		PostUnlock(m)
+		postUnlock(m)
 	}
 }
 
@@ -98,7 +99,7 @@ func (m *RWMutex) Lock() {
 func (m *RWMutex) Unlock() {
 	m.mu.Unlock()
 	if !Opts.Disable {
-		PostUnlock(m)
+		postUnlock(m)
 	}
 }
 
@@ -117,7 +118,7 @@ func (m *RWMutex) RLock() {
 func (m *RWMutex) RUnlock() {
 	m.mu.RUnlock()
 	if !Opts.Disable {
-		PostUnlock(m)
+		postUnlock(m)
 	}
 }
 
@@ -127,16 +128,16 @@ func (m *RWMutex) RLocker() sync.Locker {
 	return (*rlocker)(m)
 }
 
-func PreLock(skip int, p interface{}) {
-	lo.PreLock(skip, p)
+func preLock(skip int, p interface{}) {
+	lo.preLock(skip, p)
 }
 
-func PostLock(skip int, p interface{}) {
-	lo.PostLock(skip, p)
+func postLock(skip int, p interface{}) {
+	lo.postLock(skip, p)
 }
 
-func PostUnlock(p interface{}) {
-	lo.PostUnlock(p)
+func postUnlock(p interface{}) {
+	lo.postUnlock(p)
 }
 
 func lock(lockFn func(), ptr interface{}) {
@@ -144,7 +145,7 @@ func lock(lockFn func(), ptr interface{}) {
 		lockFn()
 		return
 	}
-	PreLock(4, ptr)
+	preLock(4, ptr)
 	if Opts.DeadlockTimeout <= 0 {
 		lockFn()
 	} else {
@@ -193,15 +194,15 @@ func lock(lockFn func(), ptr interface{}) {
 				lo.mu.Unlock()
 				Opts.OnPotentialDeadlock()
 				<-ch
-				PostLock(4, ptr)
+				postLock(4, ptr)
 				return
 			case <-ch:
-				PostLock(4, ptr)
+				postLock(4, ptr)
 				return
 			}
 		}
 	}
-	PostLock(4, ptr)
+	postLock(4, ptr)
 }
 
 type lockOrder struct {
@@ -234,7 +235,7 @@ func newLockOrder() *lockOrder {
 	}
 }
 
-func (l *lockOrder) PostLock(skip int, p interface{}) {
+func (l *lockOrder) postLock(skip int, p interface{}) {
 	stack := callers(skip)
 	gid := goid.Get()
 	l.mu.Lock()
@@ -242,7 +243,7 @@ func (l *lockOrder) PostLock(skip int, p interface{}) {
 	l.mu.Unlock()
 }
 
-func (l *lockOrder) PreLock(skip int, p interface{}) {
+func (l *lockOrder) preLock(skip int, p interface{}) {
 	if Opts.DisableLockOrderDetection {
 		return
 	}
@@ -298,7 +299,7 @@ func (l *lockOrder) PreLock(skip int, p interface{}) {
 	l.mu.Unlock()
 }
 
-func (l *lockOrder) PostUnlock(p interface{}) {
+func (l *lockOrder) postUnlock(p interface{}) {
 	l.mu.Lock()
 	delete(l.cur, p)
 	l.mu.Unlock()
