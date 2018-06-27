@@ -29,8 +29,10 @@ var Opts = struct {
 	// Will keep MaxMapSize lock pairs (happens before // happens after) in the map.
 	// The map resets once the threshold is reached.
 	MaxMapSize int
-	// Will print to deadlock info to log buffer.
-	mu     *sync.Mutex // Protects the LogBuf.
+	// Will dump stacktraces of all goroutines when inconsistent locking is detected.
+	PrintAllCurrentGoroutines bool
+	mu                        *sync.Mutex // Protects the LogBuf.
+	// Will print deadlock info to log buffer.
 	LogBuf io.Writer
 }{
 	DeadlockTimeout: time.Second * 30,
@@ -173,7 +175,6 @@ func lock(lockFn func(), ptr interface{}) {
 				fmt.Fprintln(Opts.LogBuf, "Have been trying to lock it again for more than", Opts.DeadlockTimeout)
 				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", goid.Get(), ptr)
 				printStack(Opts.LogBuf, callers(2))
-				fmt.Fprintln(Opts.LogBuf)
 				stacks := stacks()
 				grs := bytes.Split(stacks, []byte("\n\n"))
 				for _, g := range grs {
@@ -184,8 +185,10 @@ func lock(lockFn func(), ptr interface{}) {
 					}
 				}
 				lo.other(ptr)
-				fmt.Fprintln(Opts.LogBuf, "All current goroutines:")
-				Opts.LogBuf.Write(stacks)
+				if Opts.PrintAllCurrentGoroutines {
+					fmt.Fprintln(Opts.LogBuf, "All current goroutines:")
+					Opts.LogBuf.Write(stacks)
+				}
 				fmt.Fprintln(Opts.LogBuf)
 				if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
 					buf.Flush()
@@ -254,13 +257,12 @@ func (l *lockOrder) preLock(skip int, p interface{}) {
 		if b == p {
 			if bs.gid == gid {
 				Opts.mu.Lock()
-				fmt.Fprintln(Opts.LogBuf, header, "Duplicate locking, saw callers this locks in one goroutine:")
-				fmt.Fprintf(Opts.LogBuf, "current goroutine %d lock %v \n", gid, b)
-				fmt.Fprintln(Opts.LogBuf, "all callers to this lock in the goroutine")
-				printStack(Opts.LogBuf, bs.stack)
+				fmt.Fprintln(Opts.LogBuf, header, "Recursive locking:")
+				fmt.Fprintf(Opts.LogBuf, "current goroutine %d lock %p\n", gid, b)
 				printStack(Opts.LogBuf, stack)
+				fmt.Fprintln(Opts.LogBuf, "Previous place where the lock was grabbed (same goroutine)")
+				printStack(Opts.LogBuf, bs.stack)
 				l.other(p)
-				fmt.Fprintln(Opts.LogBuf)
 				if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
 					buf.Flush()
 				}
@@ -312,7 +314,17 @@ func (r *rlocker) Unlock() { (*RWMutex)(r).RUnlock() }
 
 // Under lo.mu Locked.
 func (l *lockOrder) other(ptr interface{}) {
-	fmt.Fprintln(Opts.LogBuf, "\nOther goroutines holding locks:")
+	empty := true
+	for k := range l.cur {
+		if k == ptr {
+			continue
+		}
+		empty = false
+	}
+	if empty {
+		return
+	}
+	fmt.Fprintln(Opts.LogBuf, "Other goroutines holding locks:")
 	for k, pp := range l.cur {
 		if k == ptr {
 			continue
