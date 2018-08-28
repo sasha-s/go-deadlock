@@ -37,11 +37,22 @@ var Opts = struct {
 }{
 	DeadlockTimeout: time.Second * 30,
 	OnPotentialDeadlock: func() {
+		//let other error dump
+		time.Sleep(time.Second)
 		os.Exit(2)
 	},
 	MaxMapSize: 1024 * 64,
 	mu:         &sync.Mutex{},
 	LogBuf:     os.Stderr,
+}
+
+var (
+	ENABLE_DETECT bool
+)
+
+func init() {
+	//true: use dead lock; false: raw lock, without detect
+	ENABLE_DETECT = false
 }
 
 // A Mutex is a drop-in replacement for sync.Mutex.
@@ -57,7 +68,11 @@ type Mutex struct {
 // Unless deadlock detection is disabled, logs potential deadlocks to Opts.LogBuf,
 // calling Opts.OnPotentialDeadlock on each occasion.
 func (m *Mutex) Lock() {
-	lock(m.mu.Lock, m)
+	if ENABLE_DETECT {
+		lock(m.mu.Lock, m)
+	} else {
+		m.mu.Lock()
+	}
 }
 
 // Unlock unlocks the mutex.
@@ -68,8 +83,10 @@ func (m *Mutex) Lock() {
 // arrange for another goroutine to unlock it.
 func (m *Mutex) Unlock() {
 	m.mu.Unlock()
-	if !Opts.Disable {
-		postUnlock(m)
+	if ENABLE_DETECT {
+		if !Opts.Disable {
+			postUnlock(m)
+		}
 	}
 }
 
@@ -89,7 +106,11 @@ type RWMutex struct {
 // Unless deadlock detection is disabled, logs potential deadlocks to Opts.LogBuf,
 // calling Opts.OnPotentialDeadlock on each occasion.
 func (m *RWMutex) Lock() {
-	lock(m.mu.Lock, m)
+	if ENABLE_DETECT {
+		lock(m.mu.Lock, m)
+	} else {
+		m.mu.Lock()
+	}
 }
 
 // Unlock unlocks the mutex for writing.  It is a run-time error if rw is
@@ -100,8 +121,10 @@ func (m *RWMutex) Lock() {
 // arrange for another goroutine to RUnlock (Unlock) it.
 func (m *RWMutex) Unlock() {
 	m.mu.Unlock()
-	if !Opts.Disable {
-		postUnlock(m)
+	if ENABLE_DETECT {
+		if !Opts.Disable {
+			PostUnlock(m)
+		}
 	}
 }
 
@@ -110,7 +133,11 @@ func (m *RWMutex) Unlock() {
 // Unless deadlock detection is disabled, logs potential deadlocks to Opts.LogBuf,
 // calling Opts.OnPotentialDeadlock on each occasion.
 func (m *RWMutex) RLock() {
-	lock(m.mu.RLock, m)
+	if ENABLE_DETECT {
+		lock(m.mu.RLock, m)
+	} else {
+		m.mu.RLock()
+	}
 }
 
 // RUnlock undoes a single RLock call;
@@ -119,8 +146,10 @@ func (m *RWMutex) RLock() {
 // on entry to RUnlock.
 func (m *RWMutex) RUnlock() {
 	m.mu.RUnlock()
-	if !Opts.Disable {
-		postUnlock(m)
+	if ENABLE_DETECT {
+		if !Opts.Disable {
+			postUnlock(m)
+		}
 	}
 }
 
