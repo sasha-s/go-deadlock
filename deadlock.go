@@ -123,7 +123,7 @@ func (m *RWMutex) Unlock() {
 	m.mu.Unlock()
 	if ENABLE_DETECT {
 		if !Opts.Disable {
-			PostUnlock(m)
+			postUnlock(m)
 		}
 	}
 }
