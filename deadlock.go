@@ -361,5 +361,3 @@ func (l *lockOrder) other(ptr interface{}) {
 }
 
 const header = "POTENTIAL DEADLOCK:"
-
-var x Map
