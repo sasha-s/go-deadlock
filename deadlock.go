@@ -54,11 +54,6 @@ type Locker struct {
 	sync.Locker
 }
 
-// Map is sync.Map wrapper
-type Map struct {
-	sync.Map
-}
-
 // Once is sync.Once wrapper
 type Once struct {
 	sync.Once
@@ -366,3 +361,5 @@ func (l *lockOrder) other(ptr interface{}) {
 }
 
 const header = "POTENTIAL DEADLOCK:"
+
+var x Map
