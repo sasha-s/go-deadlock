@@ -42,7 +42,7 @@ B.Lock() // defer B.Unlock() or similar.
 A.Lock() // defer A.Unlock() or similar.
 ```
 
-Another common sources of deadlocs is duplicate take a lock in a goroutine:
+Another common sources of deadlocks is duplicate take a lock in a goroutine:
 ```
 A.Rlock() or lock()
 
