@@ -181,6 +181,7 @@ Have a look at [Opts](https://pkg.go.dev/github.com/sasha-s/go-deadlock#pkg-vari
 * `Opts.DeadlockTimeout`: blocking on mutex for longer than DeadlockTimeout is considered a deadlock. ignored if negative
 * `Opts.OnPotentialDeadlock`: callback for then deadlock is detected
 * `Opts.MaxMapSize`: size of happens before // happens after table
+* `Opts.PrintAllCurrentGoroutines`:  dump stacktraces of all goroutines when inconsistent locking is detected, verbose
 * `Opts.LogBuf`: where to write deadlock info/stacktraces
 
 	
