@@ -172,4 +172,15 @@ func main() {
 	rlockTwice()
 }
 ```
+## Configuring go-deadlock
 
+Have a look at [Opts](https://pkg.go.dev/github.com/sasha-s/go-deadlock#pkg-variables).
+
+* `Opts.Disable`: disables deadlock detection altogether
+* `Opts.DisableLockOrderDetection`: disables lock order based deadlock detection.
+* `Opts.DeadlockTimeout`: blocking on mutex for longer than DeadlockTimeout is considered a deadlock. ignored if negative
+* `Opts.OnPotentialDeadlock`: callback for then deadlock is detected
+* `Opts.MaxMapSize`: size of happens before // happens after table
+* `Opts.LogBuf`: where to write deadlock info/stacktraces
+
+	
