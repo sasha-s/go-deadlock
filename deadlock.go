@@ -69,6 +69,9 @@ type WaitGroup struct {
 	sync.WaitGroup
 }
 
+// NewCond is a sync.NewCond wrapper
+var NewCond = sync.NewCond
+
 // A Mutex is a drop-in replacement for sync.Mutex.
 // Performs deadlock detection unless disabled in Opts.
 type Mutex struct {
