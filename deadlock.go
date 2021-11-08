@@ -21,7 +21,7 @@ var Opts = struct {
 	// Would disable lock order based deadlock detection if DisableLockOrderDetection == true.
 	DisableLockOrderDetection bool
 	// Waiting for a lock for longer than DeadlockTimeout is considered a deadlock.
-	// Ignored is DeadlockTimeout <= 0.
+	// Ignored if DeadlockTimeout <= 0.
 	DeadlockTimeout time.Duration
 	// OnPotentialDeadlock is called each time a potential deadlock is detected -- either based on
 	// lock order or on lock wait time.
