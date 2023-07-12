@@ -331,6 +331,11 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 
 func (l *lockOrder) postUnlock(p interface{}) {
 	l.mu.Lock()
+	for b := range l.order {
+		if b.before == p || b.after == p {
+			delete(l.order, b)
+		}
+	}
 	delete(l.cur, p)
 	l.mu.Unlock()
 }
