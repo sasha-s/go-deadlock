@@ -26,9 +26,11 @@ func printStack(w io.Writer, stack []uintptr) {
 	}
 	cwd, _ := os.Getwd()
 
-	for i, pc := range stack {
-		f := runtime.FuncForPC(pc)
-		name := f.Name()
+	frames := runtime.CallersFrames(stack)
+	for {
+		frame, more := frames.Next()
+
+		name := frame.Function
 		pkg := ""
 		if pos := strings.LastIndex(name, "/"); pos >= 0 {
 			name = name[pos+1:]
@@ -37,16 +39,13 @@ func printStack(w io.Writer, stack []uintptr) {
 			pkg = name[:pos]
 			name = name[pos+1:]
 		}
-		file, line := f.FileLine(pc)
-		if (pkg == "runtime" && name == "goexit") || (pkg == "testing" && name == "tRunner") {
+		if pkg == "runtime" && name == "goexit" || pkg == "testing" && name == "tRunner" {
 			fmt.Fprintln(w)
 			return
 		}
-		tail := ""
-		if i == 0 {
-			tail = " <<<<<" // Make the line performing a lock prominent.
-		}
-		// Shorten the file name.
+
+		// Shorten file path
+		file := frame.File
 		clean := file
 		if cwd != "" {
 			cl, err := filepath.Rel(cwd, file)
@@ -60,8 +59,18 @@ func printStack(w io.Writer, stack []uintptr) {
 				clean = s2
 			}
 		}
-		fmt.Fprintf(w, "%s:%d %s.%s %s%s\n", clean, line-1, pkg, name, code(file, line), tail)
+
+		tail := ""
+		if !more {
+			tail = " <<<<<" // Make the line performing a lock prominent.
+		}
+		fmt.Fprintf(w, "%s:%d %s.%s%s\n", clean, frame.Line, pkg, name, tail)
+
+		if !more {
+			break
+		}
 	}
+
 	fmt.Fprintln(w)
 }
 
