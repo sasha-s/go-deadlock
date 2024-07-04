@@ -27,6 +27,7 @@ func printStack(w io.Writer, stack []uintptr) {
 	cwd, _ := os.Getwd()
 
 	frames := runtime.CallersFrames(stack)
+	first := true
 	for {
 		frame, more := frames.Next()
 
@@ -61,10 +62,12 @@ func printStack(w io.Writer, stack []uintptr) {
 		}
 
 		tail := ""
-		if !more {
-			tail = " <<<<<" // Make the line performing a lock prominent.
+		if first {
+			tail = " <<<<<"
+			first = false
 		}
-		fmt.Fprintf(w, "%s:%d %s.%s%s\n", clean, frame.Line, pkg, name, tail)
+
+		fmt.Fprintf(w, "%s:%d %s.%s %s%s\n", clean, frame.Line, pkg, name, code(file, frame.Line), tail)
 
 		if !more {
 			break
@@ -96,7 +99,7 @@ func getSourceLines(file string) [][]byte {
 
 func code(file string, line int) string {
 	lines := getSourceLines(file)
-	line -= 2
+	line -= 1
 	if line >= len(lines) || line < 0 {
 		return "???"
 	}
