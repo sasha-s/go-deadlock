@@ -11,9 +11,17 @@ import (
 type ChannelMutex struct {
 	ch     chan struct{}
 	locked int32 // atomic
+	once   sync.Once
+}
+
+func (m *ChannelMutex) init() {
+	m.once.Do(func() {
+		m.ch = make(chan struct{}, 1)
+	})
 }
 
 func (m *ChannelMutex) Lock() {
+	m.init()
 	m.ch <- struct{}{}
 	atomic.StoreInt32(&m.locked, 1)
 }
@@ -27,6 +35,7 @@ func (m *ChannelMutex) Unlock() {
 }
 
 func (m *ChannelMutex) TryLock() bool {
+	m.init()
 	select {
 	case m.ch <- struct{}{}:
 		atomic.StoreInt32(&m.locked, 1)
@@ -36,74 +45,166 @@ func (m *ChannelMutex) TryLock() bool {
 	}
 }
 
-// ChannelRWMutex implements RWMutexImpl using channels for synctest compatibility
+// ChannelRWMutex implements RWMutexImpl with writer priority using channels.
+// Implements writer-priority semantics using the "Third Readers-Writers Problem" solution.
 type ChannelRWMutex struct {
-	readerSem   chan struct{}
-	writerMutex chan struct{}
-	readerCount int32
+	resource    chan struct{} // The actual resource being protected
+	readTry     chan struct{} // Gate that closes when writers waiting
+	rmutex      chan struct{} // Protects readCount modifications
+	wmutex      chan struct{} // Protects writeCount modifications
+	readCount   int32         // Number of active readers
+	writeCount  int32         // Number of waiting/active writers
+	once        sync.Once
+}
+
+func (m *ChannelRWMutex) init() {
+	m.once.Do(func() {
+		m.resource = make(chan struct{}, 1)
+		m.readTry = make(chan struct{}, 1)
+		m.rmutex = make(chan struct{}, 1)
+		m.wmutex = make(chan struct{}, 1)
+		// Initially, all semaphores are "released" (have a token)
+		m.resource <- struct{}{}
+		m.readTry <- struct{}{}
+		m.rmutex <- struct{}{}
+		m.wmutex <- struct{}{}
+	})
 }
 
 func (m *ChannelRWMutex) Lock() {
-	m.writerMutex <- struct{}{}
+	m.init()
+	// Protect writeCount modification
+	<-m.wmutex
+	count := atomic.AddInt32(&m.writeCount, 1)
+	if count == 1 {
+		// First writer: close the gate to block new readers
+		<-m.readTry
+	}
+	m.wmutex <- struct{}{} // Release wmutex
+
+	// Acquire the resource (wait for existing readers to finish)
+	<-m.resource
 }
 
 func (m *ChannelRWMutex) Unlock() {
-	<-m.writerMutex
+	// Release the resource
+	m.resource <- struct{}{}
+
+	// Protect writeCount modification
+	<-m.wmutex
+	count := atomic.AddInt32(&m.writeCount, -1)
+	if count == 0 {
+		// Last writer: reopen the gate for readers
+		m.readTry <- struct{}{}
+	}
+	m.wmutex <- struct{}{}
 }
 
 func (m *ChannelRWMutex) RLock() {
-	m.readerSem <- struct{}{}
-	count := atomic.AddInt32(&m.readerCount, 1)
+	m.init()
+	// Wait at the gate (blocks if writers are waiting)
+	<-m.readTry
+
+	// Protect readCount modification
+	<-m.rmutex
+	count := atomic.AddInt32(&m.readCount, 1)
 	if count == 1 {
-		m.writerMutex <- struct{}{}
+		// First reader: acquire the resource to block writers
+		<-m.resource
 	}
-	<-m.readerSem
+	m.rmutex <- struct{}{} // Release rmutex
+
+	// Release the gate so other readers can pass
+	m.readTry <- struct{}{}
 }
 
 func (m *ChannelRWMutex) RUnlock() {
-	m.readerSem <- struct{}{}
-	count := atomic.AddInt32(&m.readerCount, -1)
+	<-m.rmutex
+	count := atomic.AddInt32(&m.readCount, -1)
 	if count < 0 {
-		<-m.readerSem
+		m.rmutex <- struct{}{}
 		panic("RUnlock of unlocked RWMutex")
 	}
 	if count == 0 {
-		<-m.writerMutex
+		// Last reader: release the resource for writers
+		m.resource <- struct{}{}
 	}
-	<-m.readerSem
+	m.rmutex <- struct{}{}
 }
 
 func (m *ChannelRWMutex) TryLock() bool {
+	m.init()
+	// Try to acquire wmutex
 	select {
-	case m.writerMutex <- struct{}{}:
+	case <-m.wmutex:
+	default:
+		return false
+	}
+
+	count := atomic.AddInt32(&m.writeCount, 1)
+	if count == 1 {
+		// First writer: try to close gate
+		select {
+		case <-m.readTry:
+		default:
+			// Failed, rollback
+			atomic.AddInt32(&m.writeCount, -1)
+			m.wmutex <- struct{}{}
+			return false
+		}
+	}
+	m.wmutex <- struct{}{}
+
+	// Try to acquire resource
+	select {
+	case <-m.resource:
 		return true
 	default:
+		// Failed, rollback writer count
+		<-m.wmutex
+		count = atomic.AddInt32(&m.writeCount, -1)
+		if count == 0 {
+			m.readTry <- struct{}{}
+		}
+		m.wmutex <- struct{}{}
 		return false
 	}
 }
 
 func (m *ChannelRWMutex) TryRLock() bool {
+	m.init()
+	// Try to pass through the gate
 	select {
-	case m.readerSem <- struct{}{}:
-		count := atomic.AddInt32(&m.readerCount, 1)
-		if count == 1 {
-			// Need to acquire writer mutex for first reader
-			select {
-			case m.writerMutex <- struct{}{}:
-				<-m.readerSem
-				return true
-			default:
-				// Failed to get writer mutex, rollback
-				atomic.AddInt32(&m.readerCount, -1)
-				<-m.readerSem
-				return false
-			}
-		}
-		<-m.readerSem
-		return true
+	case <-m.readTry:
 	default:
 		return false
 	}
+
+	// Try to acquire rmutex
+	select {
+	case <-m.rmutex:
+	default:
+		// Failed, release gate
+		m.readTry <- struct{}{}
+		return false
+	}
+
+	count := atomic.AddInt32(&m.readCount, 1)
+	if count == 1 {
+		// First reader: try to acquire resource
+		select {
+		case <-m.resource:
+		default:
+			// Failed, rollback
+			atomic.AddInt32(&m.readCount, -1)
+			m.rmutex <- struct{}{}
+			m.readTry <- struct{}{}
+			return false
+		}
+	}
+	m.rmutex <- struct{}{}
+	m.readTry <- struct{}{}
+	return true
 }
 
 func (m *ChannelRWMutex) RLocker() sync.Locker {
@@ -123,10 +224,9 @@ func newChannelMutex() MutexImpl {
 }
 
 func newChannelRWMutex() RWMutexImpl {
-	return &ChannelRWMutex{
-		readerSem:   make(chan struct{}, 1),
-		writerMutex: make(chan struct{}, 1),
-	}
+	m := &ChannelRWMutex{}
+	m.init()
+	return m
 }
 
 // Type aliases to override the standard mutex types for synctest

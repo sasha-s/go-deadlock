@@ -1,4 +1,5 @@
-//go:build !goexperiment.synctest
+//go:build !goexperiment.synctest && !go1.18
+// +build !goexperiment.synctest,!go1.18
 
 package deadlock
 
@@ -18,7 +19,8 @@ func (m *StandardMutex) Unlock() {
 }
 
 func (m *StandardMutex) TryLock() bool {
-	return m.mu.TryLock()
+	// TryLock is not available before Go 1.18
+	panic("TryLock requires Go 1.18 or later")
 }
 
 // StandardRWMutex wraps sync.RWMutex
@@ -43,11 +45,13 @@ func (m *StandardRWMutex) RUnlock() {
 }
 
 func (m *StandardRWMutex) TryLock() bool {
-	return m.mu.TryLock()
+	// TryLock is not available before Go 1.18
+	panic("TryLock requires Go 1.18 or later")
 }
 
 func (m *StandardRWMutex) TryRLock() bool {
-	return m.mu.TryRLock()
+	// TryRLock is not available before Go 1.18
+	panic("TryRLock requires Go 1.18 or later")
 }
 
 func (m *StandardRWMutex) RLocker() sync.Locker {

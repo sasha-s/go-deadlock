@@ -224,13 +224,23 @@ func acquireTimer(d time.Duration) *time.Timer {
 }
 
 func releaseTimer(t *time.Timer) {
-	if !t.Stop() {
-		<-t.C
+	stopped := t.Stop()
+
+	// Skip timer pooling if disabled
+	if shouldDisableTimerPool() {
+		return
 	}
 
-	if !shouldDisableTimerPool() {
-		timersPool.Put(t)
+	// Use non-blocking drain to avoid hanging in synctest bubbles.
+	// Blocking on t.C can deadlock when testing/synctest virtualizes time.
+	if !stopped {
+		select {
+		case <-t.C:
+		default:
+		}
 	}
+
+	timersPool.Put(t)
 }
 
 func checkDeadlock(stack []uintptr, ptr interface{}, currentID int64, ch <-chan struct{}) {
