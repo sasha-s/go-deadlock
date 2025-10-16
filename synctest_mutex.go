@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 )
 
-
 // ChannelMutex implements MutexImpl using channels for synctest compatibility
 type ChannelMutex struct {
 	ch     chan struct{}
@@ -133,5 +132,3 @@ func newChannelRWMutex() RWMutexImpl {
 // Type aliases to override the standard mutex types for synctest
 type StandardMutex = ChannelMutex
 type StandardRWMutex = ChannelRWMutex
-
-

@@ -45,10 +45,10 @@ var Opts = struct {
 	PrintAllCurrentGoroutines bool
 	// Controls timer pooling behavior.
 	// TimerPoolDefault: Automatically choose based on build environment
-	// TimerPoolEnabled: Always use timer pooling  
+	// TimerPoolEnabled: Always use timer pooling
 	// TimerPoolDisabled: Never use timer pooling
 	TimerPool TimerPoolMode
-	mu               *sync.Mutex // Protects the LogBuf.
+	mu        *sync.Mutex // Protects the LogBuf.
 	// Will print deadlock info to log buffer.
 	LogBuf io.Writer
 }{
@@ -214,7 +214,7 @@ func acquireTimer(d time.Duration) *time.Timer {
 	if shouldDisableTimerPool() {
 		return time.NewTimer(Opts.DeadlockTimeout)
 	}
-	
+
 	t, ok := timersPool.Get().(*time.Timer)
 	if ok {
 		_ = t.Reset(d)
@@ -227,7 +227,7 @@ func releaseTimer(t *time.Timer) {
 	if !t.Stop() {
 		<-t.C
 	}
-	
+
 	if !shouldDisableTimerPool() {
 		timersPool.Put(t)
 	}
@@ -306,7 +306,6 @@ type ss struct {
 
 var lo = newLockOrder()
 
-
 func newLockOrder() *lockOrder {
 	return &lockOrder{
 		cur:   map[interface{}]stackGID{},
@@ -380,7 +379,6 @@ func (l *lockOrder) postUnlock(p interface{}) {
 	delete(l.cur, p)
 	l.mu.Unlock()
 }
-
 
 // Under lo.mu Locked.
 func (l *lockOrder) other(ptr interface{}) {

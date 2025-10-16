@@ -4,7 +4,6 @@ package deadlock
 
 import "sync"
 
-
 // StandardMutex wraps sync.Mutex
 type StandardMutex struct {
 	mu sync.Mutex
@@ -63,4 +62,3 @@ func newStandardMutex() MutexImpl {
 func newStandardRWMutex() RWMutexImpl {
 	return &StandardRWMutex{}
 }
-
