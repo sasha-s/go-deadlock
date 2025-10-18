@@ -31,3 +31,5 @@ jobs:
 
       - name: Test
         run: go test -v -bench=. -coverprofile=coverage.txt ./...
+        env:
+          GODEBUG: asynctimerchan=0
