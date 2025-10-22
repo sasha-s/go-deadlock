@@ -17,6 +17,7 @@ jobs:
           - "1.20"
           - "1.22"
           - "1.23"
+          - "1.24"
           - "1.25"
     steps:
       - uses: actions/checkout@v4
@@ -31,5 +32,20 @@ jobs:
 
       - name: Test
         run: go test -v -bench=. -coverprofile=coverage.txt ./...
+        env:
+          GODEBUG: asynctimerchan=0
+
+      - name: Test with deadlock_disable tag
+        run: go test -v -tags=deadlock_disable ./...
+
+      - name: Test with goexperiment.synctest tag (Go 1.24+)
+        if: matrix.go == '1.24' || matrix.go == '1.25'
+        run: go test -v -tags=goexperiment.synctest ./...
+        env:
+          GODEBUG: asynctimerchan=0
+
+      - name: Test with deadlock_synctest tag (Go 1.25+)
+        if: matrix.go == '1.25'
+        run: go test -v -tags=deadlock_synctest ./...
         env:
           GODEBUG: asynctimerchan=0

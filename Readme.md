@@ -172,16 +172,45 @@ func main() {
 	rlockTwice()
 }
 ```
+## Build Tags and Compatibility Modes
+
+go-deadlock supports multiple build configurations for different use cases:
+
+* **Normal mode** (default): Full deadlock detection with timer pooling
+* **Synctest mode**: Compatible with Go's `testing/synctest` package - use either:
+  * `-tags=deadlock_synctest` (recommended for Go 1.25+)
+  * `-tags=goexperiment.synctest` (for experimental synctest)
+* **Disabled mode** (`-tags=deadlock_disable`): Zero overhead, no detection
+
+**Why synctest mode?** `sync.Mutex` is not durably blocking in synctest bubbles, but channels are. Synctest mode uses channel-based mutexes to ensure proper behavior with `testing/synctest`.
+
+### Quick Examples
+
+```bash
+# Normal development/testing
+go test ./...
+
+# Testing with synctest (Go 1.25+, recommended)
+GODEBUG=asynctimerchan=0 go test -tags=deadlock_synctest ./...
+
+# Testing with experimental synctest
+GODEBUG=asynctimerchan=0 go test -tags=goexperiment.synctest ./...
+
+# Production build with zero overhead
+go build -tags=deadlock_disable ./...
+```
+
 ## Configuring go-deadlock
 
 Have a look at [Opts](https://pkg.go.dev/github.com/sasha-s/go-deadlock#pkg-variables).
 
-* `Opts.Disable`: disables deadlock detection altogether
+* `Opts.Disable`: disables deadlock detection altogether (runtime option; see also `deadlock_disable` build tag)
 * `Opts.DisableLockOrderDetection`: disables lock order based deadlock detection.
 * `Opts.DeadlockTimeout`: blocking on mutex for longer than DeadlockTimeout is considered a deadlock. ignored if negative
 * `Opts.OnPotentialDeadlock`: callback for then deadlock is detected
 * `Opts.MaxMapSize`: size of happens before // happens after table
 * `Opts.PrintAllCurrentGoroutines`:  dump stacktraces of all goroutines when inconsistent locking is detected, verbose
 * `Opts.LogBuf`: where to write deadlock info/stacktraces
+* `Opts.TimerPool`: controls timer pooling behavior (auto-configured based on build tags)
 
-	
+

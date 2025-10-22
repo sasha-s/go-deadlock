@@ -1,8 +1,9 @@
-//go:build go1.25 && !goexperiment.synctest
+//go:build go1.25 && !goexperiment.synctest && !deadlock_synctest
 
 package deadlock
 
 import (
+	"os"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -11,6 +12,11 @@ import (
 // TestGo125SynctestTimerCompatibility validates timer handling with Go 1.25 native synctest.
 // Uses channels for synchronization since sync.Mutex is not durably blocking in synctest.
 func TestGo125SynctestTimerCompatibility(t *testing.T) {
+	// Skip if GODEBUG=asynctimerchan=0 is not set (required for synctest)
+	if os.Getenv("GODEBUG") != "asynctimerchan=0" {
+		t.Skip("Skipping: This test requires GODEBUG=asynctimerchan=0")
+	}
+
 	// This test validates that our timer handling works with synctest
 	synctest.Test(t, func(t *testing.T) {
 		t.Log("Testing timer compatibility with Go 1.25 native synctest")
@@ -51,6 +57,11 @@ func TestGo125SynctestTimerCompatibility(t *testing.T) {
 
 // TestGo125SynctestWithDeadlockDetection validates deadlock detection works with synctest.
 func TestGo125SynctestWithDeadlockDetection(t *testing.T) {
+	// Skip if GODEBUG=asynctimerchan=0 is not set (required for synctest)
+	if os.Getenv("GODEBUG") != "asynctimerchan=0" {
+		t.Skip("Skipping: This test requires GODEBUG=asynctimerchan=0")
+	}
+
 	// Configure deadlock detection
 	oldTimeout := Opts.DeadlockTimeout
 	oldOnDeadlock := Opts.OnPotentialDeadlock

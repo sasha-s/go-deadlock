@@ -1,4 +1,4 @@
-//go:build goexperiment.synctest
+//go:build (goexperiment.synctest || deadlock_synctest) && !deadlock_disable
 
 package deadlock
 
