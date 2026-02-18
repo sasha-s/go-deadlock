@@ -161,6 +161,57 @@ func restore() func() {
 	}
 }
 
+func TestStarvedRLockMultipleReaders(t *testing.T) {
+	defer restore()()
+	Opts.DisableLockOrderDetection = true
+	Opts.DeadlockTimeout = time.Millisecond * 20
+	var deadlocks uint32
+	Opts.OnPotentialDeadlock = func() {
+		atomic.AddUint32(&deadlocks, 1)
+	}
+	var a RWMutex
+
+	// Reader 1 holds RLock for the duration of the test.
+	a.RLock()
+
+	// Reader 2 briefly holds and releases RLock. Before the fix, this
+	// corrupted the cur map: postLock overwrote reader 1's entry, then
+	// postUnlock deleted it entirely even though reader 1 still held it.
+	done := make(chan struct{})
+	go func() {
+		a.RLock()
+		a.RUnlock()
+		close(done)
+	}()
+	<-done
+
+	// Writer tries to Lock — blocks because reader 1 still holds RLock.
+	go func() {
+		a.Lock()
+		defer a.Unlock()
+	}()
+	time.Sleep(time.Millisecond * 100)
+
+	// Starved reader tries RLock — blocked by the pending writer.
+	ch := make(chan struct{})
+	go func() {
+		defer close(ch)
+		a.RLock()
+		defer a.RUnlock()
+	}()
+	select {
+	case <-ch:
+		t.Fatal("expected a timeout")
+	case <-time.After(time.Millisecond * 100):
+	}
+
+	if atomic.LoadUint32(&deadlocks) != 2 {
+		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
+	}
+	a.RUnlock()
+	<-ch
+}
+
 func TestLockDuplicate(t *testing.T) {
 	defer restore()()
 	Opts.DeadlockTimeout = 0
