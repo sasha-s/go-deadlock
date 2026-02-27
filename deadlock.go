@@ -308,11 +308,6 @@ type stackGID struct {
 	gid   int64
 }
 
-type beforeAfter struct {
-	before interface{}
-	after  interface{}
-}
-
 type ss struct {
 	before []uintptr
 	after  []uintptr
@@ -365,7 +360,7 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 			if bs.gid != gid { // We want locks taken in the same goroutine only.
 				continue
 			}
-			if s, ok := l.order[beforeAfter{p, b}]; ok {
+			if s, ok := l.order[newBeforeAfter(p, b)]; ok {
 				Opts.mu.Lock()
 				fmt.Fprintln(Opts.LogBuf, header, "Inconsistent locking. saw this ordering in one goroutine:")
 				fmt.Fprintln(Opts.LogBuf, "happened before")
@@ -384,7 +379,7 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 				Opts.mu.Unlock()
 				Opts.OnPotentialDeadlock()
 			}
-			l.order[beforeAfter{b, p}] = ss{bs.stack, stack}
+			l.order[newBeforeAfter(b, p)] = ss{bs.stack, stack}
 			if len(l.order) == Opts.MaxMapSize { // Reset the map to keep memory footprint bounded.
 				l.order = map[beforeAfter]ss{}
 			}
