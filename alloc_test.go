@@ -4,10 +4,17 @@ import (
 	"testing"
 )
 
-func BenchmarkCheckDeadlock(b *testing.B) {
-	ch := make(chan struct{})
-	close(ch)
+func BenchmarkRegisterDeregister(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		checkDeadlock(nil, nil, 0, ch)
+		id := dw.register(nil, nil, 0)
+		dw.deregister(id)
+	}
+}
+
+func BenchmarkLockUnlock(b *testing.B) {
+	var mu Mutex
+	for i := 0; i < b.N; i++ {
+		mu.Lock()
+		mu.Unlock()
 	}
 }
