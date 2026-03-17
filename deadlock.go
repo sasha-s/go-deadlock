@@ -180,8 +180,8 @@ func preLock(stack []uintptr, p interface{}) {
 	lo.preLock(stack, p)
 }
 
-func postLock(stack []uintptr, p interface{}) {
-	lo.postLock(stack, p)
+func postLock(stack []uintptr, buf *[stackBufSize]uintptr, p interface{}) {
+	lo.postLock(stack, buf, p)
 }
 
 func postUnlock(p interface{}) {
@@ -193,19 +193,24 @@ func lock(lockFn func(), ptr interface{}) {
 		lockFn()
 		return
 	}
-	stack := callers(1)
+	stack, buf := callers(1)
+	// Cache timeout before preLock so all Opts reads complete before preLock
+	// may call OnPotentialDeadlock. If preLock detects a problem (recursive
+	// lock, order violation) the goroutine may block forever in lockFn below,
+	// and reading Opts after preLock would race with any later Opts write.
+	timeout := Opts.DeadlockTimeout
 	preLock(stack, ptr)
-	if Opts.DeadlockTimeout <= 0 {
+	if timeout <= 0 {
 		lockFn()
 	} else {
 		currentID := goid.Get()
-		e := dw.register(stack, ptr, currentID)
+		e := dw.register(stack, ptr, currentID, timeout)
 		lockFn()
 		dw.deregister(e)
-		postLock(stack, ptr)
+		postLock(stack, buf, ptr)
 		return
 	}
-	postLock(stack, ptr)
+	postLock(stack, buf, ptr)
 }
 
 // pendingEntry tracks a goroutine that is waiting to acquire a lock. Entries are
@@ -217,7 +222,7 @@ func lock(lockFn func(), ptr interface{}) {
 //   - The done flag synchronizes the callback with deregister: deregister sets done=1
 //     before calling Stop(), and the callback checks done before acting. Because both
 //     use atomic operations, the callback is guaranteed to observe done=1 if deregister
-//     has already run — even if the runtime already scheduled the callback.
+//     has already run, even if the runtime already scheduled the callback.
 //   - An entry is only returned to the pool when timer.Stop() returns true, meaning
 //     the timer was successfully cancelled and the callback will never run. This prevents
 //     a recycled entry from being mutated by an in-flight callback.
@@ -234,7 +239,7 @@ type pendingEntry struct {
 
 func newPendingEntry() *pendingEntry {
 	e := &pendingEntry{}
-	// Capture e by pointer so the closure is stable across pool reuse — no new
+	// Capture e by pointer so the closure is stable across pool reuse, no new
 	// closure allocation when the entry is recycled.
 	e.checkFn = func() {
 		// If the lock was acquired (done=1), the entry may already be back in the
@@ -257,7 +262,7 @@ type deadlockWatcher struct{}
 
 var dw deadlockWatcher
 
-func (w *deadlockWatcher) register(stack []uintptr, ptr interface{}, gid int64) *pendingEntry {
+func (w *deadlockWatcher) register(stack []uintptr, ptr interface{}, gid int64, timeout time.Duration) *pendingEntry {
 	var e *pendingEntry
 	if shouldDisableTimerPool() {
 		e = newPendingEntry()
@@ -272,11 +277,11 @@ func (w *deadlockWatcher) register(stack []uintptr, ptr interface{}, gid int64) 
 		// First use (freshly allocated entry): create the AfterFunc timer.
 		// AfterFunc avoids the channel-drain problems of channel-based timers,
 		// which are especially problematic under testing/synctest.
-		e.timer = time.AfterFunc(Opts.DeadlockTimeout, e.checkFn)
+		e.timer = time.AfterFunc(timeout, e.checkFn)
 	} else {
 		// Reused from pool: the timer was previously Stop()'d successfully
 		// (guaranteed by deregister), so Reset is safe here.
-		e.timer.Reset(Opts.DeadlockTimeout)
+		e.timer.Reset(timeout)
 	}
 	return e
 }
@@ -305,12 +310,12 @@ func onDeadlockTimeout(e *pendingEntry) {
 	lo.mu.Lock()
 	holders, ok := lo.cur[e.ptr]
 	if !ok || len(holders) == 0 {
-		// Lock appears unheld (transient state — holder may have just released).
+		// Lock appears unheld (transient state, holder may have just released).
 		// Reschedule if the waiter is still pending. Note: this creates a new timer
 		// (e.timer is not updated), so if deregister runs later it will Stop() the
 		// original (already-fired) timer, get false, and skip pooling. The new timer's
 		// callback will then observe done=1 and no-op. This is safe but means the
-		// entry won't be recycled — acceptable since this is the rare timeout path.
+		// entry won't be recycled, acceptable since this is the rare timeout path.
 		lo.mu.Unlock()
 		if atomic.LoadInt32(&e.done) == 0 {
 			time.AfterFunc(Opts.DeadlockTimeout, e.checkFn)
@@ -361,6 +366,7 @@ type lockOrder struct {
 type stackGID struct {
 	stack []uintptr
 	gid   int64
+	buf   *[stackBufSize]uintptr // pooled backing array; returned via releaseStackBuf in postUnlock
 }
 
 type ss struct {
@@ -377,10 +383,26 @@ func newLockOrder() *lockOrder {
 	}
 }
 
-func (l *lockOrder) postLock(stack []uintptr, p interface{}) {
+// holdersPool recycles []stackGID slices used by lockOrder.cur to track which
+// goroutines currently hold each lock. Slices are returned to the pool in
+// postUnlock when a lock's holder count drops to zero, and reused in postLock
+// for the next lock acquisition, avoiding a new slice allocation per mutex.
+var holdersPool sync.Pool
+
+// postLock records the current goroutine as a holder of lock p. It tries to
+// reuse a pooled []stackGID slice before allocating, and stores the pooled
+// stack buffer in the entry so postUnlock can release it later.
+func (l *lockOrder) postLock(stack []uintptr, buf *[stackBufSize]uintptr, p interface{}) {
 	gid := goid.Get()
+	entry := stackGID{stack, gid, buf}
 	l.mu.Lock()
-	l.cur[p] = append(l.cur[p], stackGID{stack, gid})
+	holders := l.cur[p]
+	if holders == nil {
+		if s, ok := holdersPool.Get().([]stackGID); ok {
+			holders = s[:0]
+		}
+	}
+	l.cur[p] = append(holders, entry)
 	l.mu.Unlock()
 }
 
@@ -434,7 +456,9 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 				Opts.mu.Unlock()
 				Opts.OnPotentialDeadlock()
 			}
-			l.order[newBeforeAfter(b, p)] = ss{bs.stack, stack}
+			// Copy both stacks: they're backed by pooled buffers that will be
+			// recycled in postUnlock, but l.order entries persist until MaxMapSize.
+			l.order[newBeforeAfter(b, p)] = ss{copyStack(bs.stack), copyStack(stack)}
 			if len(l.order) == Opts.MaxMapSize { // Reset the map to keep memory footprint bounded.
 				l.order = map[beforeAfter]ss{}
 			}
@@ -455,15 +479,33 @@ func (l *lockOrder) postUnlock(p interface{}) {
 		}
 	}
 	if idx >= 0 {
+		removedBuf := holders[idx].buf
 		holders[idx] = holders[len(holders)-1]
-		holders[len(holders)-1] = stackGID{} // Zero to avoid retaining stack slice in underlying array.
+		holders[len(holders)-1] = stackGID{}
 		holders = holders[:len(holders)-1]
+		releaseStackBuf(removedBuf)
 	} else if len(holders) > 0 {
-		// Cross-goroutine unlock: no matching gid found, remove an arbitrary entry.
-		holders[len(holders)-1] = stackGID{} // Zero to avoid retaining stack slice in underlying array.
+		// Cross-goroutine unlock: Go permits one goroutine to Lock and a different
+		// goroutine to Unlock, so the unlocking gid may not match any holder entry.
+		// This is a rare edge case in practice, the vast majority of code unlocks
+		// from the same goroutine that locked. We remove an arbitrary entry to keep
+		// the holder count consistent with the real lock state (the lock *was*
+		// released, so one entry must go). The trade-off: for RWMutex with multiple
+		// concurrent readers we may discard the wrong reader's stack trace, making a
+		// future deadlock report show a slightly misleading "previous lock site".
+		// Detection correctness is unaffected.
+		removedBuf := holders[len(holders)-1].buf
+		holders[len(holders)-1] = stackGID{}
 		holders = holders[:len(holders)-1]
+		releaseStackBuf(removedBuf)
 	}
 	if len(holders) == 0 {
+		// Delete the map key so the mutex pointer is not retained, allowing GC of
+		// the struct it's embedded in. Recycle the backing slice via pool so the
+		// next postLock on any mutex can reuse it instead of allocating.
+		if cap(holders) > 0 {
+			holdersPool.Put(holders[:0])
+		}
 		delete(l.cur, p)
 	} else {
 		l.cur[p] = holders
