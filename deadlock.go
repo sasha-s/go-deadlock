@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/petermattis/goid"
@@ -197,104 +198,158 @@ func lock(lockFn func(), ptr interface{}) {
 	if Opts.DeadlockTimeout <= 0 {
 		lockFn()
 	} else {
-		ch := make(chan struct{})
 		currentID := goid.Get()
-		go checkDeadlock(stack, ptr, currentID, ch)
+		e := dw.register(stack, ptr, currentID)
 		lockFn()
+		dw.deregister(e)
 		postLock(stack, ptr)
-		close(ch)
 		return
 	}
 	postLock(stack, ptr)
 }
 
-var timersPool sync.Pool
-
-func acquireTimer(d time.Duration) *time.Timer {
-	if shouldDisableTimerPool() {
-		return time.NewTimer(Opts.DeadlockTimeout)
-	}
-
-	t, ok := timersPool.Get().(*time.Timer)
-	if ok {
-		_ = t.Reset(d)
-		return t
-	}
-	return time.NewTimer(Opts.DeadlockTimeout)
+// pendingEntry tracks a goroutine that is waiting to acquire a lock. Entries are
+// pooled to avoid per-lock heap allocations (goroutine stacks, channels, closures).
+//
+// Timer safety invariants:
+//   - checkFn is allocated once per entry and reused across pool cycles, so recycling
+//     an entry does not allocate a new closure.
+//   - The done flag synchronizes the callback with deregister: deregister sets done=1
+//     before calling Stop(), and the callback checks done before acting. Because both
+//     use atomic operations, the callback is guaranteed to observe done=1 if deregister
+//     has already run — even if the runtime already scheduled the callback.
+//   - An entry is only returned to the pool when timer.Stop() returns true, meaning
+//     the timer was successfully cancelled and the callback will never run. This prevents
+//     a recycled entry from being mutated by an in-flight callback.
+//   - When Stop() returns false (callback already firing or queued), the entry is
+//     intentionally leaked to GC. This only happens in the rare deadlock-timeout path.
+type pendingEntry struct {
+	stack   []uintptr
+	ptr     interface{}
+	gid     int64
+	done    int32 // atomic: 0=pending, 1=acquired
+	timer   *time.Timer
+	checkFn func()
 }
 
-func releaseTimer(t *time.Timer) {
-	stopped := t.Stop()
+func newPendingEntry() *pendingEntry {
+	e := &pendingEntry{}
+	// Capture e by pointer so the closure is stable across pool reuse — no new
+	// closure allocation when the entry is recycled.
+	e.checkFn = func() {
+		// If the lock was acquired (done=1), the entry may already be back in the
+		// pool or being reused. Bail out unconditionally.
+		if atomic.LoadInt32(&e.done) != 0 {
+			return
+		}
+		onDeadlockTimeout(e)
+	}
+	return e
+}
 
-	// Skip timer pooling if disabled
+var pendingPool = sync.Pool{
+	New: func() interface{} {
+		return newPendingEntry()
+	},
+}
+
+type deadlockWatcher struct{}
+
+var dw deadlockWatcher
+
+func (w *deadlockWatcher) register(stack []uintptr, ptr interface{}, gid int64) *pendingEntry {
+	var e *pendingEntry
 	if shouldDisableTimerPool() {
+		e = newPendingEntry()
+	} else {
+		e = pendingPool.Get().(*pendingEntry)
+	}
+	e.stack = stack
+	e.ptr = ptr
+	e.gid = gid
+	atomic.StoreInt32(&e.done, 0)
+	if e.timer == nil {
+		// First use (freshly allocated entry): create the AfterFunc timer.
+		// AfterFunc avoids the channel-drain problems of channel-based timers,
+		// which are especially problematic under testing/synctest.
+		e.timer = time.AfterFunc(Opts.DeadlockTimeout, e.checkFn)
+	} else {
+		// Reused from pool: the timer was previously Stop()'d successfully
+		// (guaranteed by deregister), so Reset is safe here.
+		e.timer.Reset(Opts.DeadlockTimeout)
+	}
+	return e
+}
+
+// deregister marks the lock as acquired and cancels the deadlock timer.
+// Must be called exactly once per register call. The entry pointer is
+// stack-local in lock(), so concurrent or duplicate calls cannot occur.
+func (w *deadlockWatcher) deregister(e *pendingEntry) {
+	// Mark done BEFORE stopping the timer. The callback checks done with an
+	// atomic load, so even if the timer fires concurrently, the callback will
+	// see done=1 and return without acting.
+	atomic.StoreInt32(&e.done, 1)
+	stopped := e.timer.Stop()
+	// Only recycle the entry if Stop() confirmed the callback won't run.
+	// If Stop() returned false the callback is already executing or queued;
+	// recycling would race with the callback reading entry fields.
+	if stopped && !shouldDisableTimerPool() {
+		e.stack = nil
+		e.ptr = nil
+		e.gid = 0
+		pendingPool.Put(e)
+	}
+}
+
+func onDeadlockTimeout(e *pendingEntry) {
+	lo.mu.Lock()
+	holders, ok := lo.cur[e.ptr]
+	if !ok || len(holders) == 0 {
+		// Lock appears unheld (transient state — holder may have just released).
+		// Reschedule if the waiter is still pending. Note: this creates a new timer
+		// (e.timer is not updated), so if deregister runs later it will Stop() the
+		// original (already-fired) timer, get false, and skip pooling. The new timer's
+		// callback will then observe done=1 and no-op. This is safe but means the
+		// entry won't be recycled — acceptable since this is the rare timeout path.
+		lo.mu.Unlock()
+		if atomic.LoadInt32(&e.done) == 0 {
+			time.AfterFunc(Opts.DeadlockTimeout, e.checkFn)
+		}
 		return
 	}
-
-	// Use non-blocking drain to avoid hanging in synctest bubbles.
-	// Blocking on t.C can deadlock when testing/synctest virtualizes time.
-	if !stopped {
-		select {
-		case <-t.C:
-		default:
+	Opts.mu.Lock()
+	fmt.Fprintln(Opts.LogBuf, header)
+	for _, prev := range holders {
+		fmt.Fprintln(Opts.LogBuf, "Previous place where the lock was grabbed")
+		fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", prev.gid, e.ptr)
+		printStack(Opts.LogBuf, prev.stack)
+	}
+	fmt.Fprintln(Opts.LogBuf, "Have been trying to lock it again for more than", Opts.DeadlockTimeout)
+	fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", e.gid, e.ptr)
+	printStack(Opts.LogBuf, e.stack)
+	stacks := stacks()
+	grs := bytes.Split(stacks, []byte("\n\n"))
+	for _, prev := range holders {
+		for _, g := range grs {
+			if goid.ExtractGID(g) == prev.gid {
+				fmt.Fprintln(Opts.LogBuf, "Here is what goroutine", prev.gid, "doing now")
+				Opts.LogBuf.Write(g)
+				fmt.Fprintln(Opts.LogBuf)
+			}
 		}
 	}
-
-	timersPool.Put(t)
-}
-
-func checkDeadlock(stack []uintptr, ptr interface{}, currentID int64, ch <-chan struct{}) {
-	t := acquireTimer(Opts.DeadlockTimeout)
-	defer releaseTimer(t)
-	for {
-		select {
-		case <-t.C:
-			lo.mu.Lock()
-			holders, ok := lo.cur[ptr]
-			if !ok || len(holders) == 0 {
-				lo.mu.Unlock()
-				break // Nobody seems to be holding the lock, try again.
-			}
-			Opts.mu.Lock()
-			fmt.Fprintln(Opts.LogBuf, header)
-			for _, prev := range holders {
-				fmt.Fprintln(Opts.LogBuf, "Previous place where the lock was grabbed")
-				fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", prev.gid, ptr)
-				printStack(Opts.LogBuf, prev.stack)
-			}
-			fmt.Fprintln(Opts.LogBuf, "Have been trying to lock it again for more than", Opts.DeadlockTimeout)
-			fmt.Fprintf(Opts.LogBuf, "goroutine %v lock %p\n", currentID, ptr)
-			printStack(Opts.LogBuf, stack)
-			stacks := stacks()
-			grs := bytes.Split(stacks, []byte("\n\n"))
-			for _, prev := range holders {
-				for _, g := range grs {
-					if goid.ExtractGID(g) == prev.gid {
-						fmt.Fprintln(Opts.LogBuf, "Here is what goroutine", prev.gid, "doing now")
-						Opts.LogBuf.Write(g)
-						fmt.Fprintln(Opts.LogBuf)
-					}
-				}
-			}
-			lo.other(ptr)
-			if Opts.PrintAllCurrentGoroutines {
-				fmt.Fprintln(Opts.LogBuf, "All current goroutines:")
-				Opts.LogBuf.Write(stacks)
-			}
-			fmt.Fprintln(Opts.LogBuf)
-			if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
-				buf.Flush()
-			}
-			Opts.mu.Unlock()
-			lo.mu.Unlock()
-			Opts.OnPotentialDeadlock()
-			<-ch
-			return
-		case <-ch:
-			return
-		}
-		t.Reset(Opts.DeadlockTimeout)
+	lo.other(e.ptr)
+	if Opts.PrintAllCurrentGoroutines {
+		fmt.Fprintln(Opts.LogBuf, "All current goroutines:")
+		Opts.LogBuf.Write(stacks)
 	}
+	fmt.Fprintln(Opts.LogBuf)
+	if buf, ok := Opts.LogBuf.(*bufio.Writer); ok {
+		buf.Flush()
+	}
+	Opts.mu.Unlock()
+	lo.mu.Unlock()
+	Opts.OnPotentialDeadlock()
 }
 
 type lockOrder struct {
