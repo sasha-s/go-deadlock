@@ -181,11 +181,17 @@ func TestRWMutexTryLock(t *testing.T) {
 }
 
 func TestTryLockDuplicate(t *testing.T) {
-	defer restore()()
+	// No restore() here: the goroutines below permanently block inside lockFn
+	// after preLock detects recursion. A deferred restore() would write to Opts
+	// while those goroutines are still reading Opts.DeadlockTimeout, causing a
+	// data race under -race. Omitting restore is safe because every other test
+	// saves/sets its own Opts via restore().
 	Opts.DeadlockTimeout = 0
 	var deadlocks uint32
+	detected := make(chan struct{}, 2)
 	Opts.OnPotentialDeadlock = func() {
 		atomic.AddUint32(&deadlocks, 1)
+		detected <- struct{}{}
 	}
 	var a RWMutex
 	var b Mutex
@@ -205,7 +211,8 @@ func TestTryLockDuplicate(t *testing.T) {
 		b.Unlock()
 		b.Unlock()
 	}()
-	time.Sleep(time.Second * 1)
+	<-detected
+	<-detected
 	if atomic.LoadUint32(&deadlocks) != 2 {
 		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
 	}

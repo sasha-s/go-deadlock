@@ -212,12 +212,166 @@ func TestStarvedRLockMultipleReaders(t *testing.T) {
 	<-ch
 }
 
-func TestLockDuplicate(t *testing.T) {
+// TestManyReadersFewWriters stresses the RWMutex tracking under high read
+// concurrency with infrequent writers. Existing tests use at most ~10
+// goroutines with a balanced reader/writer mix; real-world usage often has
+// dozens of readers racing against a handful of writers. This exercises:
+//   - the per-goroutine cur map ref-counting under heavy concurrent RLock/RUnlock,
+//     where many goroutines simultaneously call postLock and postUnlock;
+//   - lock-order detection with a large number of concurrent reader entries;
+//   - timer pool contention when many DeadlockTimeout timers are live at once.
+func TestManyReadersFewWriters(t *testing.T) {
+	defer restore()()
+	Opts.DeadlockTimeout = time.Millisecond * 5000
+	var mu RWMutex
+	var wg sync.WaitGroup
+
+	const numReaders = 100
+	const numWriters = 3
+	const readerIters = 50
+	const writerIters = 10
+
+	for i := 0; i < numReaders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := 0; k < readerIters; k++ {
+				mu.RLock()
+				time.Sleep(time.Duration(rand.Intn(500)) * time.Microsecond)
+				mu.RUnlock()
+			}
+		}()
+	}
+
+	for i := 0; i < numWriters; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for k := 0; k < writerIters; k++ {
+				mu.Lock()
+				time.Sleep(time.Duration(rand.Intn(200)) * time.Microsecond)
+				mu.Unlock()
+				time.Sleep(time.Duration(rand.Intn(1000)) * time.Microsecond)
+			}
+		}()
+	}
+
+	wg.Wait()
+}
+
+// TestConcurrentLockOrderDetection verifies that lock-order violation detection
+// works correctly under real goroutine contention. TestLockOrder runs its two
+// goroutines sequentially (wg.Wait() between them), so the order map and cur map
+// are only contested by one goroutine at a time. Here, many goroutines
+// simultaneously call preLock, postLock, and postUnlock — all contending on
+// lo.mu — while each one independently detects the same A→B vs B→A conflict.
+// This stresses concurrent iteration of lo.cur, concurrent reads/writes to
+// lo.order, and concurrent invocations of OnPotentialDeadlock.
+func TestConcurrentLockOrderDetection(t *testing.T) {
 	defer restore()()
 	Opts.DeadlockTimeout = 0
 	var deadlocks uint32
 	Opts.OnPotentialDeadlock = func() {
 		atomic.AddUint32(&deadlocks, 1)
+	}
+
+	var a, b Mutex
+
+	// Establish the A→B ordering in the lock-order map.
+	a.Lock()
+	b.Lock()
+	b.Unlock()
+	a.Unlock()
+
+	// Launch many goroutines that all acquire B→A concurrently. Each one
+	// triggers a violation in preLock when it tries to acquire A while holding
+	// B. Because every goroutine acquires in the same order (B then A), they
+	// cannot actually deadlock with each other.
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for k := 0; k < 10; k++ {
+				b.Lock()
+				a.Lock()
+				a.Unlock()
+				b.Unlock()
+			}
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+
+	if d := atomic.LoadUint32(&deadlocks); d == 0 {
+		t.Fatal("expected at least 1 lock-order violation, detected 0")
+	}
+}
+
+// TestDeadlockTimeoutTransientNoHolder exercises the reschedule path in
+// onDeadlockTimeout. When the deadlock timer fires and lo.cur has no holder
+// for the waited-on lock — a transient state that can occur between the
+// previous holder's postUnlock and the waiter's deregister — the callback
+// reschedules itself via time.AfterFunc instead of reporting a false deadlock.
+//
+// In production this window is extremely narrow (nanoseconds between
+// postUnlock removing the holder from lo.cur and the waiter's lockFn
+// returning), so it cannot be triggered reliably through normal Lock/Unlock
+// calls. Instead we invoke onDeadlockTimeout directly with a pendingEntry
+// whose lock has no holders in lo.cur, deterministically hitting the
+// reschedule branch. We then set done=1 (simulating the waiter acquiring the
+// lock) and verify the rescheduled timer fires harmlessly with no false
+// deadlock report.
+func TestDeadlockTimeoutTransientNoHolder(t *testing.T) {
+	defer restore()()
+	Opts.DisableLockOrderDetection = true
+	Opts.DeadlockTimeout = 10 * time.Millisecond
+	var deadlocks uint32
+	Opts.OnPotentialDeadlock = func() {
+		atomic.AddUint32(&deadlocks, 1)
+	}
+
+	var mu Mutex
+
+	// Build a pendingEntry as if a goroutine were blocked waiting on mu.
+	// mu has never been locked, so lo.cur has no holders for it.
+	e := newPendingEntry()
+	e.ptr = &mu
+	e.gid = 999
+	atomic.StoreInt32(&e.done, 0)
+
+	// Directly invoke the timeout handler. It will find no holders in lo.cur
+	// and take the reschedule branch (time.AfterFunc) instead of reporting.
+	onDeadlockTimeout(e)
+
+	// Simulate the waiter acquiring the lock. The rescheduled timer's checkFn
+	// will see done=1 and no-op.
+	atomic.StoreInt32(&e.done, 1)
+
+	// Wait long enough for the rescheduled timer to fire and confirm it
+	// does not report a false deadlock.
+	time.Sleep(Opts.DeadlockTimeout * 3)
+
+	if d := atomic.LoadUint32(&deadlocks); d != 0 {
+		t.Fatalf("expected 0 false deadlocks from transient no-holder state, got %d", d)
+	}
+}
+
+func TestLockDuplicate(t *testing.T) {
+	// No restore() here: the goroutines below permanently block inside lockFn
+	// after preLock detects recursion. A deferred restore() would write to Opts
+	// while those goroutines are still reading Opts.DeadlockTimeout, causing a
+	// data race under -race. Omitting restore is safe because every other test
+	// saves/sets its own Opts via restore().
+	Opts.DeadlockTimeout = 0
+	var deadlocks uint32
+	detected := make(chan struct{}, 2)
+	Opts.OnPotentialDeadlock = func() {
+		atomic.AddUint32(&deadlocks, 1)
+		detected <- struct{}{}
 	}
 	var a RWMutex
 	var b Mutex
@@ -233,7 +387,8 @@ func TestLockDuplicate(t *testing.T) {
 		b.Unlock()
 		b.Unlock()
 	}()
-	time.Sleep(time.Second * 1)
+	<-detected
+	<-detected
 	if atomic.LoadUint32(&deadlocks) != 2 {
 		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
 	}

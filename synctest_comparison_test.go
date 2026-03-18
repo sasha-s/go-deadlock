@@ -9,8 +9,13 @@ func TestNormalDeadlockDetection(t *testing.T) {
 	oldTimeout := Opts.DeadlockTimeout
 	oldOnDeadlock := Opts.OnPotentialDeadlock
 	Opts.DeadlockTimeout = 20 * time.Millisecond
+	// onDeadlockTimeout calls Opts.OnPotentialDeadlock on a timer goroutine
+	// (line 352 of deadlock.go). The channel send inside the callback creates a
+	// happens-before edge so the deferred restore below won't race with the read.
+	callbackDone := make(chan struct{}, 1)
 	Opts.OnPotentialDeadlock = func() {
 		t.Log("Deadlock detected!")
+		callbackDone <- struct{}{}
 	}
 	defer func() {
 		Opts.DeadlockTimeout = oldTimeout
@@ -33,4 +38,5 @@ func TestNormalDeadlockDetection(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	mu.Unlock()
 	<-done
+	<-callbackDone
 }
