@@ -427,8 +427,9 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 						buf.Flush()
 					}
 					Opts.mu.Unlock()
+					l.mu.Unlock()
 					Opts.OnPotentialDeadlock()
-					break
+					return
 				}
 			}
 			continue
@@ -454,7 +455,9 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 					buf.Flush()
 				}
 				Opts.mu.Unlock()
+				l.mu.Unlock()
 				Opts.OnPotentialDeadlock()
+				l.mu.Lock()
 			}
 			// Copy both stacks: they're backed by pooled buffers that will be
 			// recycled in postUnlock, but l.order entries persist until MaxMapSize.
