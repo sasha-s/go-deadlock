@@ -427,8 +427,9 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 						buf.Flush()
 					}
 					Opts.mu.Unlock()
+					l.mu.Unlock()
 					Opts.OnPotentialDeadlock()
-					break
+					return
 				}
 			}
 			continue
@@ -454,11 +455,18 @@ func (l *lockOrder) preLock(stack []uintptr, p interface{}) {
 					buf.Flush()
 				}
 				Opts.mu.Unlock()
+				// Copy stacks while l.mu is still held, BEFORE unlocking for the
+				// callback. The pooled buffers backing bs.stack can be recycled by
+				// concurrent postUnlock calls during the unlock window.
+				l.order[newBeforeAfter(b, p)] = ss{copyStack(bs.stack), copyStack(stack)}
+				l.mu.Unlock()
 				Opts.OnPotentialDeadlock()
+				l.mu.Lock()
+			} else {
+				// No violation — still need to record the ordering.
+				// l.mu is held, so copyStack is safe here.
+				l.order[newBeforeAfter(b, p)] = ss{copyStack(bs.stack), copyStack(stack)}
 			}
-			// Copy both stacks: they're backed by pooled buffers that will be
-			// recycled in postUnlock, but l.order entries persist until MaxMapSize.
-			l.order[newBeforeAfter(b, p)] = ss{copyStack(bs.stack), copyStack(stack)}
 			if len(l.order) == Opts.MaxMapSize { // Reset the map to keep memory footprint bounded.
 				l.order = map[beforeAfter]ss{}
 			}
