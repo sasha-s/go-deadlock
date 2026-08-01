@@ -393,3 +393,82 @@ func TestLockDuplicate(t *testing.T) {
 		t.Fatalf("expected 2 deadlocks, detected %d", deadlocks)
 	}
 }
+
+// TestOrderViolationCallbackPooledStackRace demonstrates a data race introduced
+// by PR #55's order-violation path: preLock unlocks lo.mu before calling
+// OnPotentialDeadlock and re-acquires it after, but then continues to read
+// bs.stack — a slice into a pooled stack buffer — and copyStack() it into
+// lo.order. During the unlock window, a concurrent cross-goroutine Unlock can
+// release that exact buffer back to stackBufPool, where another goroutine grabs
+// it from the pool and writes to it. The subsequent copyStack(bs.stack) then
+// races with that write.
+//
+// Run with `go test -race -run TestOrderViolationCallbackPooledStackRace` to
+// observe the data race report.
+func TestOrderViolationCallbackPooledStackRace(t *testing.T) {
+	defer restore()()
+	Opts.DeadlockTimeout = 0
+	Opts.OnPotentialDeadlock = func() {} // placeholder, overridden below
+
+	var a, b Mutex
+
+	// Prime lo.order with the "a then b" ordering.
+	a.Lock()
+	b.Lock()
+	b.Unlock()
+	a.Unlock()
+
+	// Hold b in this goroutine, then snapshot the exact stack buffer that
+	// preLock will later read through bs.stack. We close over this pointer in
+	// the helper to write to it concurrently with preLock's copyStack().
+	b.Lock()
+
+	lo.mu.Lock()
+	if len(lo.cur[&b]) != 1 {
+		lo.mu.Unlock()
+		t.Fatalf("expected exactly 1 holder for b, got %d", len(lo.cur[&b]))
+	}
+	holderBuf := lo.cur[&b][0].buf
+	lo.mu.Unlock()
+
+	if holderBuf == nil {
+		t.Fatal("expected holder buf to be non-nil")
+	}
+
+	callbackEntered := make(chan struct{})
+	helperDone := make(chan struct{})
+
+	Opts.OnPotentialDeadlock = func() {
+		// At this point in the post-PR code, lo.mu has already been released.
+		// Signal the helper to start writing to the pooled buffer.
+		close(callbackEntered)
+		// Give the helper time to start churning so its writes overlap with
+		// preLock's copyStack(bs.stack) after this callback returns and lo.mu
+		// is re-acquired.
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	go func() {
+		defer close(helperDone)
+		<-callbackEntered
+		// Tight write loop directly on the same backing array that preLock's
+		// bs.stack points into. preLock will re-acquire lo.mu after the
+		// callback and execute copyStack(bs.stack), which calls
+		// copy(c, bs.stack) — a read of this exact memory. Since the writes
+		// here have no happens-before with that read (no shared mutex, no
+		// channel), the race detector will flag the read.
+		for i := 0; i < 5000000; i++ {
+			holderBuf[0] = uintptr(i)
+		}
+	}()
+
+	// Trigger preLock's order-violation path. Post-PR this calls the callback,
+	// re-acquires lo.mu, and runs copyStack(bs.stack) — racing the helper.
+	a.Lock()
+	a.Unlock()
+
+	<-helperDone
+
+	// b is still locked (we never unlocked it). Release it for cleanup.
+	b.Unlock()
+}
